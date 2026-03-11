@@ -45,10 +45,10 @@ cd InvRGBL
 conda create -n InvRGBL python=3.9 -y
 conda activate InvRGBL
 pip install -r requirements.txt
-pip install git+https://github.com/nerfstudio-project/gsplat.git@v1.3.0
-pip install git+https://github.com/facebookresearch/pytorch3d.git
-pip install git+https://github.com/NVlabs/nvdiffrast
-pip install ./bvh
+pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git@v1.3.0
+pip install --no-build-isolation git+https://github.com/facebookresearch/pytorch3d.git
+pip install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast
+pip install --no-build-isolation ./bvh
 ```
 
 ## 📊 Prepare Data

@@ -1,4 +1,5 @@
 import argparse
+import os
 import numpy as np
 
 if __name__ == "__main__":
@@ -198,10 +199,23 @@ if __name__ == "__main__":
         )
     elif args.dataset == "argoverse":
         from datasets.argoverse.argoverse_preprocess import ArgoVerseProcessor
-        
+
+        split_alias = {
+            "training": "train",
+            "train": "train",
+            "validation": "val",
+            "val": "val",
+            "testing": "test",
+            "test": "test",
+        }
+        if args.split not in split_alias:
+            raise ValueError(
+                f"Unsupported argoverse split '{args.split}', choose from train/val/test or training/validation/testing"
+            )
+        argo_split_dir = split_alias[args.split]
         scene_ids_list = [int(scene_id) for scene_id in scene_ids_list]
         dataset_processor = ArgoVerseProcessor(
-            load_dir=args.data_root,
+            load_dir=os.path.join(args.data_root, argo_split_dir),
             save_dir=args.target_dir,
             process_keys=args.process_keys,
             process_id_list=scene_ids_list,
