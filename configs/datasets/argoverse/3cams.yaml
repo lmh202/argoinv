@@ -14,7 +14,7 @@ data:
     undistort: false
     test_image_stride: 0
     load_sky_mask: true
-    load_dynamic_mask: false
+    load_dynamic_mask: true
     load_objects: true
     load_smpl: false
     sampler:

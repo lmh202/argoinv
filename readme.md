@@ -58,7 +58,13 @@ pip install --no-build-isolation ./bvh
 
 预处理命令（以 training 为例）：
 
+注意：
+
+- 2026-03 起 Argoverse 预处理格式已更新（含坐标修复与动态 mask 生成）。
+- 旧的预处理结果需要重跑，否则训练会因 `scene_meta.format_version` 不匹配或对象初始化异常而失败。
+
 ```bash
+cd /data0/invrgbl
 export PYTHONPATH=$(pwd)
 
 python datasets/preprocess.py \
@@ -67,6 +73,21 @@ python datasets/preprocess.py \
   --split training \
   --target_dir /data0/dataset/preprocessed/argoverse \
   --workers 8 \
+  --process_keys images lidar calib pose dynamic_masks objects
+```
+
+单场景调试（可选）：
+
+```bash
+cd /data0/invrgbl
+export PYTHONPATH=$(pwd)
+
+python datasets/preprocess.py \
+  --data_root /data0/dataset/av2/sensor \
+  --dataset argoverse \
+  --split training \
+  --target_dir /data0/dataset/preprocessed/argoverse \
+  --workers 1 \
   --scene_ids 0 \
   --process_keys images lidar calib pose dynamic_masks objects
 ```
@@ -79,38 +100,40 @@ python datasets/preprocess.py \
 
 ## 4. 训练命令
 
-## 动态场景
+推荐使用下面这条命令进行 Argoverse 动态场景完整训练（30k iter，带显存友好参数）：
 
 ```bash
+cd /data0/invrgbl
 export PYTHONPATH=$(pwd)
+export CUDA_VISIBLE_DEVICES=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
 
-python tools/train.py \
+nohup python tools/train.py \
   --config_file configs/invrgbl.yaml \
-  --output_root ./work_dirs \
-  --project invrgbl_exp \
-  --run_name run_dynamic_001 \
+  --output_root /data0/invrgbl/work_dirs \
+  --project invrgbl_argo \
+  --run_name argo_train_v1 \
   dataset=argoverse/1cams \
   data.data_root=/data0/dataset/preprocessed/argoverse/training \
   data.scene_idx=0 \
   data.start_timestep=0 \
-  data.end_timestep=50
-```
-
-## 静态场景
-
-```bash
-export PYTHONPATH=$(pwd)
-
-python tools/train.py \
-  --config_file configs/invrgbl_static.yaml \
-  --output_root ./work_dirs \
-  --project invrgbl_exp \
-  --run_name run_static_001 \
-  dataset=argoverse/1cams \
-  data.data_root=/data0/dataset/preprocessed/argoverse/training \
-  data.scene_idx=0 \
-  data.start_timestep=0 \
-  data.end_timestep=50
+  data.end_timestep=-1 \
+  data.preload_device=cpu \
+  data.pixel_source.downscale_when_loading=[1] \
+  trainer.optim.num_iters=30000 \
+  trainer.optim.grad_clip_norm=1.0 \
+  trainer.optim.nan_guard=true \
+  trainer.render.pbr=true \
+  trainer.render.pbr_incident_sample_num=40 \
+  trainer.render.pbr_visibility_chunk_size=120000 \
+  trainer.render.pbr_shading_chunk_size=120000 \
+  trainer.render.pbr_cache_device=cpu \
+  trainer.render.pbr_cache_dtype=float16 \
+  trainer.render.pbr_compute_dtype=float16 \
+  model.Background.init.from_lidar.num_samples=500000 \
+  logging.vis_freq=5000 \
+  logging.print_freq=500 \
+  logging.saveckpt_freq=5000 > /data0/invrgbl/out.log 2>&1 &
 ```
 
 如果使用 Waymo，把 `dataset` 改为 `waymo/1cams`，并替换对应 `data.data_root`。
@@ -120,15 +143,16 @@ python tools/train.py \
 ## 5. 五分钟内 Smoke Test（推荐先跑）
 
 ```bash
+cd /data0/invrgbl
 export PYTHONPATH=$(pwd)
 
-python tools/train.py \
+nohup python tools/train.py \
   --config_file configs/invrgbl.yaml \
   --output_root /data0/invrgbl/work_dirs \
   --project invrgbl_argo \
-  --run_name phase4_smoke \
+  --run_name argo_smoke \
   dataset=argoverse/1cams \
-  data.data_root=/data0/dataset/preprocessed/argoverse \
+  data.data_root=/data0/dataset/preprocessed/argoverse/training \
   data.scene_idx=0 \
   data.start_timestep=0 \
   data.end_timestep=20 \
@@ -138,7 +162,7 @@ python tools/train.py \
   logging.print_freq=5 \
   logging.saveckpt_freq=10 \
   render.render_full=False \
-  render.render_test=False
+  render.render_test=False >> phase4_smoke.log 2>&1 &
 ```
 
 ---
@@ -178,7 +202,7 @@ python tools/eval.py \
 
 - 当前可在无 `intensity/normal` 先验文件时运行
 - 若无 intensity 监督，日志中的 LiDAR intensity RMSE 可能为 `-1`
-- 动态 mask 可为空，不影响最小可运行链路
+- 动态 mask 由预处理阶段自动生成，建议保持开启（Argoverse 配置默认开启）
 
 ---
 

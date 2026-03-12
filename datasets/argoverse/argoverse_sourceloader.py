@@ -16,6 +16,8 @@ from datasets.base.scene_dataset import ModelType
 
 logger = logging.getLogger()
 
+EXPECTED_FORMAT_VERSION = "argoverse_v2_dynamic_fix"
+
 
 OBJECT_CLASS_NODE_MAPPING = {
     "Vehicle": ModelType.RigidNodes,
@@ -23,9 +25,29 @@ OBJECT_CLASS_NODE_MAPPING = {
     "Cyclist": ModelType.DeformableNodes,
 }
 
-# opencv: x right, y down, z front
-# dataset(ego): x front, y left, z up
-OPENCV2DATASET = np.array([[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 0, 1]])
+def _load_checked_scene_meta(data_path: str) -> Dict:
+    meta_path = os.path.join(data_path, "scene_meta.json")
+    if not os.path.exists(meta_path):
+        raise RuntimeError(
+            f"Missing scene_meta.json at {meta_path}. Please re-run Argoverse preprocessing."
+        )
+    with open(meta_path, "r") as f:
+        meta = json.load(f)
+    if meta.get("format_version") != EXPECTED_FORMAT_VERSION:
+        raise RuntimeError(
+            "Unsupported Argoverse preprocessed format. "
+            f"Expected format_version={EXPECTED_FORMAT_VERSION}, got {meta.get('format_version')}. "
+            "Please re-run preprocessing with the updated pipeline."
+        )
+    if meta.get("lidar_point_frame") != "ego":
+        raise RuntimeError(
+            f"Expected lidar_point_frame=ego, got {meta.get('lidar_point_frame')}."
+        )
+    if meta.get("object_pose_frame") != "city":
+        raise RuntimeError(
+            f"Expected object_pose_frame=city, got {meta.get('object_pose_frame')}."
+        )
+    return meta
 
 
 class ArgoverseCameraData(CameraData):
@@ -80,7 +102,6 @@ class ArgoverseCameraData(CameraData):
         _distortions = np.array([k1, k2, p1, p2, k3])
 
         cam_to_ego = np.loadtxt(os.path.join(self.data_path, "extrinsics", f"{self.cam_id}.txt"))
-        cam_to_ego = cam_to_ego @ OPENCV2DATASET
 
         cam_to_worlds, intrinsics, distortions = [], [], []
         ego_to_world_start = np.loadtxt(os.path.join(self.data_path, "ego_pose", f"{self.start_timestep:03d}.txt"))
@@ -109,7 +130,6 @@ class ArgoverseCameraData(CameraData):
     @classmethod
     def get_camera2worlds(cls, data_path: str, cam_id: str, start_timestep: int, end_timestep: int) -> torch.Tensor:
         cam_to_ego = np.loadtxt(os.path.join(data_path, "extrinsics", f"{cam_id}.txt"))
-        cam_to_ego = cam_to_ego @ OPENCV2DATASET
         cam_to_worlds = []
         ego_to_world_start = np.loadtxt(os.path.join(data_path, "ego_pose", f"{start_timestep:03d}.txt"))
         for t in range(start_timestep, end_timestep):
@@ -132,6 +152,7 @@ class ArgoversePixelSource(ScenePixelSource):
     ):
         super().__init__(dataset_name, pixel_data_config, device=device)
         self.data_path = data_path
+        self.scene_meta = _load_checked_scene_meta(data_path)
         self.start_timestep = start_timestep
         self.end_timestep = end_timestep
         self.load_data()
@@ -225,6 +246,7 @@ class ArgoverseLiDARSource(SceneLidarSource):
     ):
         super().__init__(lidar_data_config, device=device)
         self.data_path = data_path
+        self.scene_meta = _load_checked_scene_meta(data_path)
         self.start_timestep = start_timestep
         self.end_timestep = end_timestep
         self.create_all_filelist()

@@ -94,6 +94,7 @@ class MultiTrainer(BasicTrainer):
                 cur_node_type='RigidNodes',
                 **self.model_config["RigidNodes"]["init"]
             )
+            logger.info(f"RigidNodes init candidates: {len(rigidnode_pts_dict)}")
 
         if "DeformableNodes" in self.model_config:
             deformnode_pts_dict = dataset.get_init_objects(
@@ -101,11 +102,13 @@ class MultiTrainer(BasicTrainer):
                 exclude_smpl="SMPLNodes" in self.model_config,
                 **self.model_config["DeformableNodes"]["init"]
             )
+            logger.info(f"DeformableNodes init candidates: {len(deformnode_pts_dict)}")
 
         if "SMPLNodes" in self.model_config:
             smplnode_pts_dict = dataset.get_init_smpl_objects(
                 **self.model_config["SMPLNodes"]["init"]
             )
+            logger.info(f"SMPLNodes init candidates: {len(smplnode_pts_dict)}")
         allnode_pts_dict = {**rigidnode_pts_dict, **deformnode_pts_dict, **smplnode_pts_dict}
         
         # NOTE: Some gaussian classes may be empty (because no points for initialization)
@@ -303,4 +306,3 @@ class MultiTrainer(BasicTrainer):
         metric_dict = super().compute_metrics(outputs, image_infos)
         
         return metric_dict
-

@@ -142,6 +142,14 @@ class BasicTrainer(nn.Module):
         self.viewer = None
         self.pbr = self.render_cfg.pbr
         self.sun_intensity = 10
+        self.pbr_incident_sample_num = self.render_cfg.get("pbr_incident_sample_num", 64)
+        self.pbr_visibility_chunk_size = self.render_cfg.get("pbr_visibility_chunk_size", -1)
+        self.pbr_shading_chunk_size = self.render_cfg.get("pbr_shading_chunk_size", 200000)
+        self.pbr_cache_device = self.render_cfg.get("pbr_cache_device", "cpu")
+        self.pbr_cache_dtype = self.render_cfg.get("pbr_cache_dtype", "float16")
+        self.pbr_compute_dtype = self.render_cfg.get("pbr_compute_dtype", "float16")
+        self.grad_clip_norm = self.optim_general.get("grad_clip_norm", 1.0)
+        self.nan_guard = self.optim_general.get("nan_guard", True)
     
     @property
     def in_test_set(self):
@@ -283,8 +291,8 @@ class BasicTrainer(nn.Module):
                 incident_visibility_results = []
                 incident_dirs_results = []
                 incident_areas_results = []
-                sample_num = 128 #24
-                chunk_size = gaussians_xyz.shape[0]
+                sample_num = self.pbr_incident_sample_num
+                chunk_size = self.pbr_visibility_chunk_size if self.pbr_visibility_chunk_size > 0 else gaussians_xyz.shape[0]
                 for offset in tqdm(range(0, gaussians_xyz.shape[0], chunk_size), "Update visibility with raytracing."):
                     incident_dirs, incident_areas = sample_incident_rays(gaussians_normal[offset:offset + chunk_size], True,
                                                             sample_num-1) #-1 TODO
@@ -312,6 +320,15 @@ class BasicTrainer(nn.Module):
                 incident_dirs_result = torch.cat(incident_dirs_results, dim=0)
                 incident_areas_result = torch.cat(incident_areas_results, dim=0)
                 del raytracer
+                if self.pbr_cache_dtype == "float16":
+                    incident_visibility_result = incident_visibility_result.to(dtype=torch.float16)
+                    incident_dirs_result = incident_dirs_result.to(dtype=torch.float16)
+                    incident_areas_result = incident_areas_result.to(dtype=torch.float16)
+
+                if self.pbr_cache_device == "cpu":
+                    incident_visibility_result = incident_visibility_result.cpu()
+                    incident_dirs_result = incident_dirs_result.cpu()
+                    incident_areas_result = incident_areas_result.cpu()
                 if self.cur_frame.item() in self._visibility_tracings_list:
                     del self._visibility_tracings_list[self.cur_frame.item()]
                     del self._incident_dirs_list[self.cur_frame.item()]
@@ -410,6 +427,33 @@ class BasicTrainer(nn.Module):
     
     def optimizer_step(self) -> None:
         self.optimizer.step()
+
+    @staticmethod
+    def _sanitize_param_tensor(param: torch.nn.Parameter, min_val: float = None, max_val: float = None) -> None:
+        if param is None:
+            return
+        if (not torch.is_tensor(param.data)) or (not torch.is_floating_point(param.data)):
+            return
+        param.data = torch.nan_to_num(param.data, nan=0.0, posinf=1e4, neginf=-1e4)
+        if min_val is not None and max_val is not None:
+            param.data.clamp_(min=min_val, max=max_val)
+
+    def _sanitize_gaussian_params(self) -> None:
+        with torch.no_grad():
+            for class_name in self.gaussian_classes.keys():
+                model = self.models[class_name]
+                for attr in ["_means", "_scales", "_quats", "_opacities", "_features_dc", "_features_rest",
+                             "_normals", "_incidents_dc", "_incidents_rest"]:
+                    if hasattr(model, attr):
+                        self._sanitize_param_tensor(getattr(model, attr))
+                if hasattr(model, "_base_color"):
+                    self._sanitize_param_tensor(model._base_color, min_val=-12.0, max_val=12.0)
+                if hasattr(model, "_roughness"):
+                    self._sanitize_param_tensor(model._roughness, min_val=-12.0, max_val=12.0)
+                if hasattr(model, "_reflectivity"):
+                    self._sanitize_param_tensor(model._reflectivity, min_val=-12.0, max_val=12.0)
+                if hasattr(model, "_sun_visibility"):
+                    self._sanitize_param_tensor(model._sun_visibility, min_val=-12.0, max_val=12.0)
 
     def preprocess_per_train_step(self, step: int) -> None:
         self.step = step
@@ -607,6 +651,8 @@ class BasicTrainer(nn.Module):
                     sun_visibility = sun_visibility, #self.sun_visibility, #,
                     xyz = gs.means,
                     step = self.step,
+                    point_chunk_size = self.pbr_shading_chunk_size,
+                    compute_dtype = self.pbr_compute_dtype,
                     )
                 diffuse_light = extra_results["diffuse_light"]
                 incident_sun_light = extra_results["incident_sun_light"]
@@ -754,8 +800,29 @@ class BasicTrainer(nn.Module):
     def backward(self, loss_dict: Dict[str, torch.Tensor]) -> None:
         # ----------------- backward ----------------
         total_loss = sum(loss for loss in loss_dict.values())
+        if self.nan_guard and (not torch.isfinite(total_loss)):
+            logger.warning(f"[NaN Guard] non-finite total loss at step {self.step}, skip this step")
+            self.optimizer_zero_grad()
+            return
+
         self.grad_scaler.scale(total_loss).backward()
+
+        if self.nan_guard:
+            for group in self.optimizer.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None and torch.is_floating_point(p.grad):
+                        p.grad = torch.nan_to_num(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if self.grad_clip_norm and self.grad_clip_norm > 0:
+            self.grad_scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                [p for g in self.optimizer.param_groups for p in g["params"] if p.grad is not None],
+                max_norm=self.grad_clip_norm
+            )
+
         self.optimizer_step()
+        if self.nan_guard:
+            self._sanitize_gaussian_params()
         
         scale = self.grad_scaler.get_scale()
         self.grad_scaler.update()

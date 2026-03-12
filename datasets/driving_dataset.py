@@ -341,6 +341,9 @@ class DrivingDataset(SceneDataset):
                 instance_dict[ins_id]["colors"].append(valid_colors)
                 # instance_dict[ins_id]["flows"].append(valid_flows)
         
+        logger.info(
+            f"[{cur_node_type}] Candidate instances before lidar aggregation: {len(instance_dict)}"
+        )
         logger.info(f"Aggregating lidar points across {self.frame_num} frames")
         for ins_id in instance_dict:
             instance_dict[ins_id]["pts"] = torch.cat(instance_dict[ins_id]["pts"], dim=0)
@@ -355,28 +358,39 @@ class DrivingDataset(SceneDataset):
                 # instance_dict[ins_id]["flows"] = instance_dict[ins_id]["flows"][sampled_idx]
                 instance_dict[ins_id]["num_pts"] = instance_max_pts
             logger.info(f"Instance {ins_id} has {instance_dict[ins_id]['num_pts']} lidar sample points")
+
+        with_pts_dict = {k: v for k, v in instance_dict.items() if v["num_pts"] > 0}
+        logger.info(
+            f"[{cur_node_type}] Instances with lidar points: {len(with_pts_dict)}/{len(instance_dict)}"
+        )
+        instance_dict = with_pts_dict
         
         if only_moving:
-            # consider only the instances with non-zero flows
             logger.info(f"Filtering out the instances with non-moving trajectories")
             new_instance_dict = {}
+            removed_by_traj = 0
             for k, v in instance_dict.items():
-                if v["num_pts"] > 0:
-                    # flows = v["flows"]
-                    # if flows.norm(dim=-1).mean() > moving_thres:
-                    #     v.pop("flows")
-                    #     new_instance_dict[k] = v
-                    #     logger.info(f"Instance {k} has {v['num_pts']} lidar sample points")
-                    frame_info = self.pixel_source.per_frame_instance_mask[:, k]
-                    instances_pose = self.pixel_source.instances_pose[:, k]
-                    instances_trans = instances_pose[:, :3, 3]
-                    valid_trans = instances_trans[frame_info]
-                    traj_length = valid_trans[1:] - valid_trans[:-1]
-                    traj_length = torch.norm(traj_length, dim=-1).sum()
-                    if traj_length > traj_length_thres:
-                        new_instance_dict[k] = v
-                        logger.info(f"Instance {k} has {v['num_pts']} lidar sample points")
+                # flows = v["flows"]
+                # if flows.norm(dim=-1).mean() > moving_thres:
+                #     v.pop("flows")
+                #     new_instance_dict[k] = v
+                #     logger.info(f"Instance {k} has {v['num_pts']} lidar sample points")
+                frame_info = self.pixel_source.per_frame_instance_mask[:, k]
+                instances_pose = self.pixel_source.instances_pose[:, k]
+                instances_trans = instances_pose[:, :3, 3]
+                valid_trans = instances_trans[frame_info]
+                traj_length = valid_trans[1:] - valid_trans[:-1]
+                traj_length = torch.norm(traj_length, dim=-1).sum()
+                if traj_length > traj_length_thres:
+                    new_instance_dict[k] = v
+                    logger.info(f"Instance {k} has {v['num_pts']} lidar sample points")
+                else:
+                    removed_by_traj += 1
             instance_dict = new_instance_dict
+            logger.info(
+                f"[{cur_node_type}] After moving filter: {len(instance_dict)} kept, "
+                f"{removed_by_traj} removed by traj_length<={traj_length_thres}"
+            )
             
         # get instance info
         for ins_id in instance_dict:

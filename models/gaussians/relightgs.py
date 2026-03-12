@@ -210,20 +210,24 @@ class RelightableGaussian(nn.Module):
 
     @property
     def get_base_color(self):
-        return self.base_color_activation(self._base_color[...,:3]) #* self.base_color_scale[None, :]
+        base_color = torch.nan_to_num(self._base_color[...,:3], nan=0.0, posinf=12.0, neginf=-12.0)
+        return self.base_color_activation(base_color) #* self.base_color_scale[None, :]
 
     @property
     def get_roughness(self):
-        return self.roughness_activation(self._roughness)
+        roughness = torch.nan_to_num(self._roughness, nan=0.0, posinf=12.0, neginf=-12.0)
+        return self.roughness_activation(roughness)
 
     @property
     def get_reflectivity(self):
         #return self.reflectivity_activation(self._base_color[...,-1][...,None])
-        return self.reflectivity_activation(self._reflectivity)
+        reflectivity = torch.nan_to_num(self._reflectivity, nan=0.0, posinf=12.0, neginf=-12.0)
+        return self.reflectivity_activation(reflectivity)
 
     @property
     def get_sun_visibility(self):
-        return self.sun_visibility_activation(self._sun_visibility)
+        sun_visibility = torch.nan_to_num(self._sun_visibility, nan=0.0, posinf=12.0, neginf=-12.0)
+        return self.sun_visibility_activation(sun_visibility)
 
 
     @property

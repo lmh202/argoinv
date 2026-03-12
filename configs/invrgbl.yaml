@@ -8,6 +8,8 @@ trainer:
   optim:
     num_iters: 30000
     use_grad_scaler: false
+    grad_clip_norm: 1.0
+    nan_guard: true
     cache_buffer_freq: -1 # if > 0, use error based image sampler for training
   render:
     near_plane: 0.1 # near plane for rendering
@@ -18,6 +20,12 @@ trainer:
     sparse_grad: false # whether to use sparse gradient for rendering, supported by gsplat kernel
     batch_size: 1 # batch size for rendering, currently only support 1
     pbr: true
+    pbr_incident_sample_num: 48 # quality-first but constrained under memory budget
+    pbr_visibility_chunk_size: 200000 # split ray tracing visibility update to lower memory peak
+    pbr_shading_chunk_size: 200000 # split BRDF transport integration to lower memory peak
+    pbr_cache_device: cpu # keep visibility caches off GPU to cap VRAM usage
+    pbr_cache_dtype: float16 # reduce cache footprint while keeping PBR enabled
+    pbr_compute_dtype: float16 # run heavy BRDF transport in fp16 then cast back
   losses:
     rgb:
       w: 0.8

@@ -60,7 +60,8 @@ def rendering_equation_lidar(base_color, roughness, normals, viewdirs, view_dist
 ### USING ###
 def rendering_equation(base_color, roughness, normals, viewdirs,
                               incidents=None, direct_light_env_light=None,
-                              incident_dirs=None, incident_areas=None, visibility_precompute=None,sample_num=24,sun_visibility=None,xyz=None,step=None):
+                              incident_dirs=None, incident_areas=None, visibility_precompute=None,sample_num=24,sun_visibility=None,xyz=None,step=None,
+                              point_chunk_size: int = 0, compute_dtype: str = "float16"):
     
     normals = normals.detach()
     # if incident_dirs is None:
@@ -80,29 +81,34 @@ def rendering_equation(base_color, roughness, normals, viewdirs,
     deg = int(np.sqrt(incidents.shape[1]) - 1)
     
 
-    global_incident_lights = direct_light_env_light.direct_light(incident_dirs,step) #)
+    num_pts = base_color.shape[0]
+    if point_chunk_size is None or point_chunk_size <= 0:
+        point_chunk_size = num_pts
+    work_dtype = torch.float16 if compute_dtype == "float16" else normals.dtype
 
-    global_incident_lights = torch.ones_like(global_incident_lights) * torch.tensor([200, 200, 180]).to(device=normals.device) / 255 * 1.5
-    local_incident_lights = 0 #eval_sh(deg, incidents.transpose(1, 2).view(-1, 1, 3, (deg + 1) ** 2), incident_dirs).clamp_min(0)
-    incident_visibility = visibility_precompute
-    # incident_visibility[incident_visibility>0.5] = 1
-    # incident_visibility[incident_visibility<=0.5] = 0
-    global_incident_lights = global_incident_lights * incident_visibility
-    incident_lights = global_incident_lights + local_incident_lights  
+    pbr_chunks = []
+    diffuse_chunks = []
+    for start in range(0, num_pts, point_chunk_size):
+        end = min(start + point_chunk_size, num_pts)
+        normals_chunk = normals[start:end].to(device=normals.device, dtype=work_dtype, non_blocking=True)
+        dirs_chunk = incident_dirs[start:end].to(device=normals.device, dtype=work_dtype, non_blocking=True)
+        areas_chunk = incident_areas[start:end].to(device=normals.device, dtype=work_dtype, non_blocking=True)
+        vis_chunk = visibility_precompute[start:end].to(device=normals.device, dtype=work_dtype, non_blocking=True)
+        global_incident_lights = torch.ones_like(dirs_chunk) * torch.tensor([200, 200, 180]).to(device=normals.device) / 255 * 1.5
+        incident_lights = global_incident_lights * vis_chunk
+        n_d_i_chunk = (normals_chunk[:, None] * dirs_chunk).sum(-1, keepdim=True).clamp(min=0)
+        f_d_chunk = base_color[start:end, None].to(dtype=work_dtype) / np.pi
+        transport_chunk = incident_lights * areas_chunk * n_d_i_chunk  # (num_pts_chunk, num_sample, 3)
+        pbr_chunks.append((f_d_chunk * transport_chunk).mean(dim=-2).to(dtype=base_color.dtype))
+        diffuse_chunks.append(transport_chunk.mean(dim=-2).to(dtype=base_color.dtype))
 
-    n_d_i = (normals[:, None] * incident_dirs).sum(-1, keepdim=True).clamp(min=0)
-    f_d = base_color[:, None] / np.pi
-    f_s = 0 #GGX_specular(normals, viewdirs, incident_dirs, roughness, fresnel=0.04)
-
-    transport = incident_lights * incident_areas * n_d_i  # （num_pts, num_sample, 3)
-    
-
-    specular = ((f_s) * transport).mean(dim=-2)
-    pbr = ((f_d + f_s) * transport).mean(dim=-2)
-    diffuse_light = transport.mean(dim=-2)
+    pbr = torch.cat(pbr_chunks, dim=0)
+    diffuse_light = torch.cat(diffuse_chunks, dim=0)
+    specular = torch.zeros_like(pbr)
 
     if with_sun and (sun_visibility is not None):
-        sun_visibility = sun_visibility.detach()
+        sun_visibility = sun_visibility.detach().to(device=normals.device, dtype=normals.dtype, non_blocking=True)
+        sun_direction = sun_direction.to(device=normals.device, dtype=normals.dtype, non_blocking=True)
         #sun_visibility = torch.where(sun_visibility < 0.95, torch.tensor(0.0), sun_visibility)
         intensity = direct_light_env_light.sun_intensity[None,...].repeat(incident_dirs.shape[0],1) #* 0.5
         #intensity = torch.ones_like(intensity) *torch.tensor([255, 178, 102]).to(device=intensity.device) * 3 / 255 #* 3
@@ -116,11 +122,6 @@ def rendering_equation(base_color, roughness, normals, viewdirs,
     pbr = pbr 
 
     extra_results = {
-        "incident_dirs": incident_dirs,
-        "incident_lights": incident_lights,
-        "local_incident_lights": local_incident_lights,
-        "global_incident_lights": global_incident_lights,
-        #"incident_visibility": incident_visibility,
         "diffuse_light":  diffuse_light, #specular
         "specular": specular,
         "incident_sun_light": sun_light ,
