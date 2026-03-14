@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass, fields
 from sklearn.neighbors import NearestNeighbors
-from pytorch3d.transforms import matrix_to_quaternion
+from utils.general_utils import rotation_to_quaternion as matrix_to_quaternion
 
 from gsplat.rendering import rasterization
 from gsplat.cuda_legacy._wrapper import num_sh_bases

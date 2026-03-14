@@ -4,9 +4,12 @@ import logging
 import os
 
 import numpy as np
-import open3d as o3d
 import torch
 import torch.distributed as dist
+try:
+    import open3d as o3d
+except Exception:
+    o3d = None
 
 logger = logging.getLogger()
 
@@ -29,6 +32,8 @@ def export_points_to_ply(
     save_path: str,
     normalize: bool = False,
     ):
+    if o3d is None:
+        raise ImportError("open3d is required for export_points_to_ply but is not available in this environment.")
     # normalize points
     if normalize:
         aabb_min = positions.min(0)[0]
@@ -48,6 +53,8 @@ def export_points_to_ply(
     o3d.io.write_point_cloud(save_path, pcd)
 
 def export_gaussians_to_ply(model, path, name='point_cloud.ply', aabb=None):
+    if o3d is None:
+        raise ImportError("open3d is required for export_gaussians_to_ply but is not available in this environment.")
     model.eval()
     filename = os.path.join(path, name)
     map_to_tensors = {}

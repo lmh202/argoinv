@@ -235,9 +235,13 @@ class MultiTrainer(BasicTrainer):
             image_ids=image_infos["img_idx"].flatten()[0],
             novel_view=novel_view
         )
+        sun_direction = None
+        if "Sky" in self.models and hasattr(self.models["Sky"], "get_sun_direction"):
+            sun_direction = self.models["Sky"].get_sun_direction().detach()
         gs = self.collect_gaussians(
             cam=processed_cam,
-            image_ids=image_infos["img_idx"].flatten()[0]
+            image_ids=image_infos["img_idx"].flatten()[0],
+            sun_direction=sun_direction,
         )
 
         # render gaussians

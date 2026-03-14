@@ -2,6 +2,7 @@ from omegaconf import OmegaConf
 import numpy as np
 import os
 import time
+import json
 import wandb
 import random
 import imageio
@@ -53,6 +54,7 @@ def setup(args):
     
     # merge cli
     cfg = OmegaConf.merge(cfg, args_from_cli)
+    cfg = maybe_apply_scene_sun(cfg)
     log_dir = os.path.join(args.output_root, args.project, args.run_name)
     
     # update config and create log dir
@@ -106,9 +108,45 @@ def setup(args):
     )
     return cfg
 
+
+def maybe_apply_scene_sun(cfg: OmegaConf) -> OmegaConf:
+    data_cfg = cfg.get("data", None)
+    sky_cfg = cfg.get("model", {}).get("Sky", None)
+    if data_cfg is None or sky_cfg is None:
+        return cfg
+    sky_params = sky_cfg.get("params", None)
+    if sky_params is None:
+        return cfg
+    if sky_params.get("fixed_sun_direction", None) is not None:
+        return cfg
+
+    scene_idx = int(data_cfg.scene_idx)
+    scene_meta = os.path.join(data_cfg.data_root, f"{scene_idx:03d}", "scene_meta.json")
+    if not os.path.exists(scene_meta):
+        return cfg
+    try:
+        with open(scene_meta, "r") as f:
+            meta = json.load(f)
+        sun = meta.get("sun", {})
+        sun_dir = sun.get("sun_direction_world", None)
+        if isinstance(sun_dir, list) and len(sun_dir) == 3:
+            sky_params.fixed_sun_direction = [float(v) for v in sun_dir]
+            sky_params.fixed_sun_city = None
+            sky_params.fixed_sun_capture_utc = None
+            logger.info(
+                "Auto-loaded fixed_sun_direction from scene_meta: %s",
+                sky_params.fixed_sun_direction,
+            )
+    except Exception as exc:
+        logger.warning("Failed to read scene_meta sun direction from %s: %s", scene_meta, exc)
+    return cfg
+
 def main(args):
     cfg = setup(args)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
 
     # build dataset
     dataset = DrivingDataset(data_cfg=cfg.data)
@@ -186,10 +224,11 @@ def main(args):
     all_iters = np.arange(trainer.step, trainer.num_iters + 1)
 
 
+    memory_cleanup_freq = cfg.logging.get("memory_cleanup_freq", 250)
     for step in metric_logger.log_every(all_iters, cfg.logging.print_freq):
         #----------------------------------------------------------------------------
         #----------------------------     Validate     ------------------------------
-        if step % cfg.logging.vis_freq == 0 and cfg.logging.vis_freq > 0:
+        if cfg.logging.vis_freq > 0 and step % cfg.logging.vis_freq == 0:
             logger.info("Visualizing...")
             vis_timestep = np.linspace(
                 0,
@@ -252,10 +291,10 @@ def main(args):
         image_infos, cam_infos = dataset.train_image_set.next(train_step_camera_downscale)
         for k, v in image_infos.items():
             if isinstance(v, torch.Tensor):
-                image_infos[k] = v.cuda(non_blocking=True)
+                image_infos[k] = v.to(device, non_blocking=True)
         for k, v in cam_infos.items():
             if isinstance(v, torch.Tensor):
-                cam_infos[k] = v.cuda(non_blocking=True)
+                cam_infos[k] = v.to(device, non_blocking=True)
         
         # forward & backward
         outputs = trainer(image_infos, cam_infos)
@@ -342,8 +381,9 @@ def main(args):
             logger.info("Done caching rgb error maps")
         
         del loss_dict, outputs
-        torch.cuda.empty_cache()
-        gc.collect()              
+        if memory_cleanup_freq > 0 and (step % memory_cleanup_freq == 0):
+            torch.cuda.empty_cache()
+            gc.collect()
     
     logger.info("Training done!")
 
@@ -380,6 +420,13 @@ if __name__ == "__main__":
     # viewer
     parser.add_argument("--enable_viewer", action="store_true", help="enable viewer")
     parser.add_argument("--viewer_port", type=int, default=8080, help="viewer port")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="training device",
+    )
     
     # misc
     parser.add_argument("opts", help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)

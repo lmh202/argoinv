@@ -1,6 +1,14 @@
 import argparse
 import os
+import sys
 import numpy as np
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if SCRIPT_DIR in sys.path:
+    sys.path.remove(SCRIPT_DIR)
 
 if __name__ == "__main__":
     """
@@ -150,6 +158,32 @@ if __name__ == "__main__":
         help="Interpolate to get frames at higher frequency, this is only used for nuscene dataset",
     )
     parser.add_argument(
+        "--version",
+        type=str,
+        default="v1.0-trainval",
+        help="dataset version, mainly used by nuscenes (e.g. v1.0-mini, v1.0-trainval, v1.0-test)",
+    )
+    parser.add_argument(
+        "--sky_mask_method",
+        type=str,
+        default="color",
+        choices=["color", "segformer"],
+        help="sky mask extraction backend for datasets that support it (nuscenes)",
+    )
+    parser.add_argument(
+        "--segformer_model_id",
+        type=str,
+        default="nvidia/segformer-b5-finetuned-ade-640-640",
+        help="HuggingFace model id for SegFormer sky segmentation",
+    )
+    parser.add_argument(
+        "--segformer_device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="inference device for SegFormer sky segmentation",
+    )
+    parser.add_argument(
         "--process_keys",
         nargs="+",
         default=[
@@ -228,12 +262,39 @@ if __name__ == "__main__":
         )
     elif args.dataset == "nuscenes":
         from datasets.nuscenes.nuscenes_preprocess import NuScenesProcessor
-        
+
+        split_alias = {
+            "training": "train",
+            "train": "train",
+            "validation": "val",
+            "val": "val",
+            "testing": "test",
+            "test": "test",
+            "mini_train": "mini_train",
+            "mini_val": "mini_val",
+        }
+        if args.split not in split_alias:
+            raise ValueError(
+                f"Unsupported nuscenes split '{args.split}', choose from "
+                "train/val/test/training/validation/testing/mini_train/mini_val"
+            )
+        nusc_split = split_alias[args.split]
+        output_split_dir = {
+            "train": "training",
+            "val": "validation",
+            "test": "testing",
+            "mini_train": "mini_training",
+            "mini_val": "mini_validation",
+        }[nusc_split]
         scene_ids_list = [int(scene_id) for scene_id in scene_ids_list]
         dataset_processor = NuScenesProcessor(
             load_dir=args.data_root,
-            save_dir=args.target_dir,
-            split=args.split,
+            save_dir=os.path.join(args.target_dir, output_split_dir),
+            split=nusc_split,
+            version=args.version,
+            sky_mask_method=args.sky_mask_method,
+            segformer_model_id=args.segformer_model_id,
+            segformer_device=args.segformer_device,
             interpolate_N=args.interpolate_N,
             process_keys=args.process_keys,
             process_id_list=scene_ids_list,

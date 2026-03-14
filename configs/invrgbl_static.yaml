@@ -134,6 +134,11 @@ model:
     type: models.modules.EnvLight
     params:
       resolution: 1024
+      optimize_intensity_only: true
+      fixed_sun_city: PIT
+      fixed_sun_capture_utc: "2024-06-21 17:00"
+      fixed_sun_elevation_m: null
+      fixed_sun_direction: null
     optim:
       all:
         lr: 0.01

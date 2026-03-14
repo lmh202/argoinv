@@ -298,10 +298,16 @@ class BasicTrainer(nn.Module):
                                                             sample_num-1) #-1 TODO
 
                     if sun_direction is not None:
-                        sun_direction = sun_direction
-                        sun_direction = sun_direction/sun_direction.norm()
-                        sun_direction = sun_direction.repeat(incident_dirs.shape[0],1,1).to(device=incident_dirs.device)
-                        incident_dirs = torch.concat([sun_direction,incident_dirs], dim=1)
+                        sun_direction_vec = torch.as_tensor(
+                            sun_direction, dtype=incident_dirs.dtype, device=incident_dirs.device
+                        ).reshape(-1)
+                        if sun_direction_vec.numel() != 3:
+                            raise ValueError(
+                                f"sun_direction should contain 3 values, got shape={tuple(sun_direction_vec.shape)}"
+                            )
+                        sun_direction_vec = sun_direction_vec / (sun_direction_vec.norm() + 1e-8)
+                        sun_direction_batch = sun_direction_vec.view(1, 1, 3).repeat(incident_dirs.shape[0], 1, 1)
+                        incident_dirs = torch.concat([sun_direction_batch, incident_dirs], dim=1)
                         incident_areas = torch.concat([incident_areas[:,0,:].unsqueeze(1),incident_areas], dim=1)
 
 

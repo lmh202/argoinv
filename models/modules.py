@@ -2,6 +2,7 @@ import torch
 from typing import Optional, Tuple
 import logging
 import numpy as np
+from datetime import datetime, timezone
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -240,23 +241,33 @@ class EnvLight(torch.nn.Module):
         class_name: str,
         resolution=512, #1024,
         device: torch.device = torch.device("cuda"),
+        optimize_intensity_only: bool = False,
+        fixed_sun_direction=None,
+        fixed_sun_city: str = None,
+        fixed_sun_capture_utc: str = None,
+        fixed_sun_elevation_m: float = None,
         **kwargs
     ):
         super().__init__()
         self.class_prefix = class_name + "#"
         self.device = device
-        self.to_opengl = torch.tensor([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=torch.float32, device="cuda")
+        self.optimize_intensity_only = optimize_intensity_only
+        self.to_opengl = torch.tensor([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=torch.float32, device=self.device)
         self.base = torch.nn.Parameter(
             0.15 * torch.ones(6, resolution, resolution, 3, requires_grad=True),
         )
         self.envmap = torch.nn.Parameter(0.5 * torch.ones(int(resolution / 2), resolution, 3, requires_grad=True))
         self.transform = None
-        sun_direction = torch.tensor([-0.7235, -0.6525, 0.234])
-        sun_direction = sun_direction/sun_direction.norm()
-        self.anno_sun_direction = sun_direction 
-        sun_direction = self.anno_sun_direction
-        self.sun_direction = torch.nn.Parameter(sun_direction)
-        self.sun_direction_ = torch.nn.Parameter(torch.tensor([-3.14, -2.84, 1]))
+        sun_direction = self._build_fixed_sun_direction(
+            fixed_sun_direction=fixed_sun_direction,
+            fixed_sun_city=fixed_sun_city,
+            fixed_sun_capture_utc=fixed_sun_capture_utc,
+            fixed_sun_elevation_m=fixed_sun_elevation_m,
+        )
+        # Fixed sun direction: no optimization on position.
+        self.register_buffer("anno_sun_direction", sun_direction)
+        self.sun_direction = torch.nn.Parameter(sun_direction.clone(), requires_grad=False)
+        self.sun_direction_ = torch.nn.Parameter(torch.tensor([-3.14, -2.84, 1]), requires_grad=False)
         self.sun_intensity = torch.nn.Parameter(torch.ones(3) *3) 
         self.sky_intensity = torch.nn.Parameter(torch.tensor([0.6835,0.7401,0.8705])*0.8) 
         self.deg = 3
@@ -327,9 +338,69 @@ class EnvLight(torch.nn.Module):
 
 
     def get_param_groups(self):
+        if self.optimize_intensity_only:
+            params = [
+                self.sun_intensity,
+                self.sky_intensity,
+                self.sky_intensity_scale,
+            ]
+            return {
+                self.class_prefix+"all": params,
+            }
         return {
             self.class_prefix+"all": self.parameters(),
         }
+
+    def _build_fixed_sun_direction(
+        self,
+        fixed_sun_direction=None,
+        fixed_sun_city: str = None,
+        fixed_sun_capture_utc: str = None,
+        fixed_sun_elevation_m: float = None,
+    ) -> torch.Tensor:
+        if fixed_sun_direction is not None:
+            sun_dir = torch.as_tensor(fixed_sun_direction, dtype=torch.float32)
+            if sun_dir.numel() != 3:
+                raise ValueError(
+                    f"fixed_sun_direction must contain 3 values, got shape={tuple(sun_dir.shape)}"
+                )
+            sun_dir = sun_dir.reshape(3)
+            return sun_dir / (sun_dir.norm() + 1e-8)
+
+        if fixed_sun_city is not None and fixed_sun_capture_utc is not None:
+            try:
+                from sun.sun_position import get_av2_city_location, compute_sun_position_at_datetime
+
+                lat, lon, city_elev = get_av2_city_location(fixed_sun_city)
+                elev = city_elev if fixed_sun_elevation_m is None else float(fixed_sun_elevation_m)
+                dt_utc = datetime.strptime(fixed_sun_capture_utc, "%Y-%m-%d %H:%M").replace(
+                    tzinfo=timezone.utc
+                )
+                result = compute_sun_position_at_datetime(
+                    latitude=lat,
+                    longitude=lon,
+                    dt_utc=dt_utc,
+                    elevation_m=elev,
+                )
+                sun_dir = torch.tensor(result.direction_enu, dtype=torch.float32)
+                sun_dir = sun_dir / (sun_dir.norm() + 1e-8)
+                logger.info(
+                    "Using fixed sun direction from city/time: city=%s utc=%s dir=%s",
+                    fixed_sun_city,
+                    fixed_sun_capture_utc,
+                    sun_dir.tolist(),
+                )
+                return sun_dir
+            except Exception as exc:
+                logger.warning(
+                    "Failed to compute fixed sun direction from city/time (%s, %s): %s. Falling back to default direction.",
+                    fixed_sun_city,
+                    fixed_sun_capture_utc,
+                    exc,
+                )
+
+        sun_dir = torch.tensor([-0.7235, -0.6525, 0.234], dtype=torch.float32)
+        return sun_dir / (sun_dir.norm() + 1e-8)
         
 class AffineTransform(nn.Module):
     def __init__(

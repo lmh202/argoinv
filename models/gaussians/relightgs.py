@@ -20,7 +20,10 @@ logger = logging.getLogger()
 # from bvh import RayTracer
 from utils.graphics_utils import sample_incident_rays
 from bvh import RayTracer
-import open3d as o3d
+try:
+    import open3d as o3d
+except Exception:
+    o3d = None
 
 
 
@@ -137,17 +140,8 @@ class RelightableGaussian(nn.Module):
 
             self._sun_visibility = Parameter(torch.zeros(init_means.shape[0], 1, device=self.device))
 
-            # Load point cloud
-            point_cloud = o3d.geometry.PointCloud()
-            point_cloud.points = o3d.utility.Vector3dVector(init_means.detach().cpu().numpy())
-            # Estimate normals
-            point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
-
-            # Optional: Orient normals consistently
-            point_cloud.orient_normals_consistent_tangent_plane(k=50)
-            normal = np.asarray(point_cloud.normals).astype(np.float32)
-            sign = (normal[...,2].mean() > 0)
-            self._normals = Parameter(torch.tensor(sign * normal, device=self.device))
+            normal = self._estimate_init_normals(init_means)
+            self._normals = Parameter(torch.tensor(normal, device=self.device))
             #self._normals = Parameter(torch.zeros(init_means.shape[0], 3, device=self.device))
             reflectance = init_colors.mean(dim=-1)[...,None]
             init_colors = torch.cat((init_colors,reflectance),dim=-1)
@@ -156,13 +150,32 @@ class RelightableGaussian(nn.Module):
             self._roughness = Parameter(torch.ones(init_means.shape[0], 1, device=self.device)) 
             #self._metallic = Parameter(torch.zeros(init_means.shape[0], 1, device=self.device))    
             self.max_sh_degree = 3
-            incidents = torch.zeros((init_means.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            incidents = torch.zeros(
+                (init_means.shape[0], 3, (self.max_sh_degree + 1) ** 2),
+                dtype=torch.float32,
+                device=self.device,
+            )
             self._incidents_dc = Parameter(
                 incidents[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)) #N*1*3
             self._incidents_rest = Parameter(
                 incidents[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)) #N*15*3
 
             #self.update_visibility()        
+
+    def _estimate_init_normals(self, init_means: torch.Tensor) -> np.ndarray:
+        pts = init_means.detach().cpu().numpy()
+        if o3d is None:
+            logger.warning("open3d unavailable, fallback to +Z normals for gaussian initialization.")
+            normal = np.zeros_like(pts, dtype=np.float32)
+            normal[:, 2] = 1.0
+            return normal
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(pts)
+        point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+        point_cloud.orient_normals_consistent_tangent_plane(k=50)
+        normal = np.asarray(point_cloud.normals).astype(np.float32)
+        sign = (normal[..., 2].mean() > 0)
+        return sign * normal
         
     @property
     def colors(self):
@@ -712,4 +725,3 @@ class RelightableGaussian(nn.Module):
         self._incident_dirs = incident_dirs_result.detach()
         self._incident_areas = incident_areas_result.detach()
         #del raytracer
-
